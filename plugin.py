@@ -43,27 +43,33 @@
 """
 import json
 import socket
+from PyP100 import PyP110 as p
 
 import Domoticz
 
-PORT = 9999
+PORT = 80
 STATES = ('off', 'on', 'unknown')
 
 
 class TpLinkSmartPlugPlugin:
     enabled = False
     connection = None
+    tapoPlug = None
 
     def __init__(self):
         self.interval = 6  # 6*10 seconds
         self.heartbeatcounter = 0
 
     def onStart(self):
-        if Parameters["Mode6"] == "Debug":
-            Domoticz.Debugging(1)
-            DumpConfigToLog()
+        self.tapoPlug = p.P110("192.168.1.xx", "mail@gmail.com", "password")
+        self.tapoPlug.handshake()
+        self.tapoPlug.login()
+        Domoticz.Log("Device " + self.tapoPlug.getDeviceName() + " connected.")
 
-        if len(Devices) == 0:
+        # if Parameters["Mode6"] == "Debug":
+        #     Domoticz.Debugging(1)
+        #     DumpConfigToLog()
+        if (len(Devices) == 0):
             Domoticz.Device(Name="switch", Unit=1, TypeName="Switch", Used=1).Create()
             Domoticz.Log("Tp-Link smart plug device created")
 
@@ -73,13 +79,13 @@ class TpLinkSmartPlugPlugin:
             Domoticz.Device(Name="(V)", Unit=3, Type=243, Subtype=8).Create()
             Domoticz.Device(Name="(W)", Unit=4, Type=243, Subtype=29).Create()
 
-        state = self.get_switch_state()
-        if state in 'off':
-            Devices[1].Update(0, '0')
-        elif state in 'on':
-            Devices[1].Update(1, '100')
-        else:
-            Devices[1].Update(1, '50')
+        # state = self.get_switch_state()
+        # if state in 'off':
+        #     Devices[1].Update(0, '0')
+        # elif state in 'on':
+        #     Devices[1].Update(1, '100')
+        # else:
+        #     Devices[1].Update(1, '50')
 
     def onStop(self):
         # Domoticz.Log("onStop called")
@@ -94,32 +100,17 @@ class TpLinkSmartPlugPlugin:
         pass
 
     def onCommand(self, unit, command, level, hue):
-        Domoticz.Log("onCommand called for Unit " +
-                     str(unit) + ": Parameter '" + str(command) + "', Level: " + str(level))
+        Domoticz.Log("onCommand called for Unit" + self.tapoPlug.getDeviceName() + ": " + command)
 
         if command.lower() == 'on':
-            cmd = {
-                "system": {
-                    "set_relay_state": {"state": 1}
-                }
-            }
+            self.tapoPlug.turnOn()
             state = (1, '100')
 
         elif command.lower() == 'off':
-            cmd = {
-                "system": {
-                    "set_relay_state": {"state": 0}
-                }
-            }
+            self.tapoPlug.turnOff()
             state = (0, '0')
 
-        result = self._send_json_cmd(json.dumps(cmd))
-        Domoticz.Debug("got response: {}".format(result))
-
-        err_code = result.get('system', {}).get('set_relay_state', {}).get('err_code', 1)
-
-        if err_code == 0:
-            Devices[1].Update(*state)
+        Devices[1].Update(*state)
 
         # Reset counter so we trigger emeter poll next heartbeat
         self.heartbeatcounter = 0
@@ -133,59 +124,73 @@ class TpLinkSmartPlugPlugin:
         pass
 
     def onHeartbeat(self):
-        if self.heartbeatcounter % self.interval == 0:
-            self.update_emeter_values()
-        state = self.get_switch_state()
-        if state in 'off':
-            Devices[1].Update(0, '0')
-        elif state in 'on':
-            Devices[1].Update(1, '100')
+        if(self.tapoPlug is None):
+            Domoticz.Log("TapoPlug not found")
         else:
-            Devices[1].Update(1, '50')
-        self.heartbeatcounter += 1
+            deviceInfo = self.tapoPlug.getDeviceInfo()
+            Domoticz.Log(deviceInfo)
+            if(self._isPlugOn()):
+                Devices[1].Update(1, '100')
+            else:
+                Devices[1].Update(0, '0')
 
-    def _encrypt(self, data):
-        key = 171
-        result = b"\x00\x00\x00" + chr(len(data)).encode('latin-1')
-        for i in data.encode('latin-1'):
-            a = key ^ i
-            key = a
-            result += bytes([a])
-        return result
+        # if self.heartbeatcounter % self.interval == 0:
+        #     self.update_emeter_values()
+        # state = self.get_switch_state()
+        # if state in 'off':
+        #     Devices[1].Update(0, '0')
+        # elif state in 'on':
+        #     Devices[1].Update(1, '100')
+        # else:
+        #     Devices[1].Update(1, '50')
+        # self.heartbeatcounter += 1
+    
+    def _isPlugOn(self):
+        deviceInfo = self.tapoPlug.getDeviceInfo()
+        return deviceInfo['result']['device_on']
 
-    def _decrypt(self, data):
-        key = 171
-        result = ""
-        for i in data:
-            a = key ^ i
-            key = i
-            result += bytes([a]).decode('latin-1')
-        return result
+    # def _encrypt(self, data):
+    #     key = 171
+    #     result = b"\x00\x00\x00" + chr(len(data)).encode('latin-1')
+    #     for i in data.encode('latin-1'):
+    #         a = key ^ i
+    #         key = a
+    #         result += bytes([a])
+    #     return result
 
-    def _send_json_cmd(self, cmd):
-        ret = {}
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1.5)
-            sock.connect((Parameters["Address"], PORT))
-            data = self._encrypt(cmd)
-            sock.send(data)
-            data = sock.recv(1024)
-            Domoticz.Debug('data len: {}'.format(len(data)))
-            sock.close()
-        except socket.error as e:
-            Domoticz.Log('send command error: {}'.format(str(e)))
-            raise
+    # def _decrypt(self, data):
+    #     key = 171
+    #     result = ""
+    #     for i in data:
+    #         a = key ^ i
+    #         key = i
+    #         result += bytes([a]).decode('latin-1')
+    #     return result
 
-        try:
-            json_resp = self._decrypt(data[4:])
-            ret = json.loads(json_resp)
-        except (TypeError, JSONDecodeError) as e:
-            Domoticz.Log('decode error: {}'.format(str(e)))
-            Domoticz.Log('data: {}'.format(str(data)))
-            raise
+    # def _send_json_cmd(self, cmd):
+    #     ret = {}
+    #     try:
+    #         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #         sock.settimeout(1.5)
+    #         sock.connect((Parameters["Address"], PORT))
+    #         data = self._encrypt(cmd)
+    #         sock.send(data)
+    #         data = sock.recv(1024)
+    #         Domoticz.Debug('data len: {}'.format(len(data)))
+    #         sock.close()
+    #     except socket.error as e:
+    #         Domoticz.Log('send command error: {}'.format(str(e)))
+    #         raise
 
-        return ret
+    #     try:
+    #         json_resp = self._decrypt(data[4:])
+    #         ret = json.loads(json_resp)
+    #     except (TypeError, JSONDecodeError) as e:
+    #         Domoticz.Log('decode error: {}'.format(str(e)))
+    #         Domoticz.Log('data: {}'.format(str(data)))
+    #         raise
+
+    #     return ret
 
     def update_emeter_values(self):
         if Parameters["Mode1"] == "HS110":
@@ -228,20 +233,24 @@ class TpLinkSmartPlugPlugin:
 
 
     def get_switch_state(self):
-        cmd = {
-            "system": {
-                "get_sysinfo": "null"
-            }
-        }
-        result = self._send_json_cmd(json.dumps(cmd))
-        print(result)
-
-        err_code = result.get('system', {}).get('get_sysinfo', {}).get('err_code', 1)
-
-        if err_code == 0:
-            state = result['system']['get_sysinfo']['relay_state']
+        # cmd = {
+        #     "system": {
+        #         "get_sysinfo": "null"
+        #     }
+        # }
+        # result = self._send_json_cmd(json.dumps(cmd))
+        result = p110.getDeviceInfo()
+        if(result['result']['device_on']):
+            state = 'on'
         else:
-            state = 2
+            state = 'off'
+        Domoticz.Log(state)
+        # err_code = result.get('system', {}).get('get_sysinfo', {}).get('err_code', 1)
+
+        # if err_code == 0:
+        #     state = result['system']['get_sysinfo']['relay_state']
+        # else:
+        #     state = 2
 
         return STATES[state]
 
